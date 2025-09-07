@@ -1,0 +1,63 @@
+---
+title: "Reworking_Data"
+author: "Vanessa Zepeda"
+date: "2025-09-05"
+output: html_document
+---
+
+# setting up the data like 3.3
+
+```{r}
+library(dplyr)
+library(BradleyTerry2)
+
+combined_data = read.csv("Combined_data.csv")
+
+games <- combined_data %>% mutate(
+
+    home.team = ifelse(At == "@", Loser, Winner),
+    away.team = ifelse(At == "@", Winner, Loser),
+    
+    home.win = ifelse(At == "@", 0, 1), 
+
+    home.points = ifelse(At == "@", PtsL, PtsW),
+    away.points = ifelse(At == "@", PtsW, PtsL),
+    ) %>% select(Season, home.team, away.team, home.points, away.points, home.win)
+```
+
+```{r}
+matchup_summary <- games %>%
+  group_by(Season, home.team, away.team) %>%
+  summarise(
+    home.wins = sum(home.win),
+    away.wins = n() - sum(home.win),
+    .groups = "drop"
+  ) %>%
+  arrange(Season, home.team, away.team)
+
+matchup_summary
+```
+
+```{r}
+all_teams <- factor(unique(c(matchup_summary$home.team, matchup_summary$away.team)))
+
+matchup_summary$home.team <- data.frame(
+  team   = factor(matchup_summary$home.team, levels = all_teams),
+  at.home = 1
+)
+
+matchup_summary$away.team <- data.frame(
+  team   = factor(matchup_summary$away.team, levels = all_teams),
+  at.home = 0
+)
+
+bt_model <- BTm( outcome = cbind(home.wins, away.wins), player1 = home.team,
+                 player2 = away.team, formula = ~ team + at.home, id = "team",
+                 data = matchup_summary)
+
+summary(bt_model)
+```
+
+```{r}
+
+```
