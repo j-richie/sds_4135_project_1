@@ -9,6 +9,59 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r}
+library(dplyr)
+library(BradleyTerry2)
+
+combined_data = read.csv("Combined_data.csv")
+
+games <- combined_data %>% mutate(
+
+    home.team = ifelse(At == "@", Loser, Winner),
+    away.team = ifelse(At == "@", Winner, Loser),
+    
+    home.win = ifelse(At == "@", 0, 1), 
+
+    home.points = ifelse(At == "@", PtsL, PtsW),
+    away.points = ifelse(At == "@", PtsW, PtsL),
+    ) %>% select(Season, home.team, away.team, home.points, away.points, home.win)
+```
+
+```{r}
+matchup_summary <- games %>%
+  group_by(Season, home.team, away.team) %>%
+  summarise(
+    home.wins = sum(home.win),
+    away.wins = n() - sum(home.win),
+    .groups = "drop"
+  ) %>%
+  arrange(Season, home.team, away.team)
+
+matchup_summary
+```
+
+```{r}
+all_teams <- factor(unique(c(matchup_summary$home.team, matchup_summary$away.team)))
+
+matchup_summary$home.team <- data.frame(
+  team   = factor(matchup_summary$home.team, levels = all_teams),
+  at.home = 1
+)
+
+matchup_summary$away.team <- data.frame(
+  team   = factor(matchup_summary$away.team, levels = all_teams),
+  at.home = 0
+)
+
+bt_model <- BTm( outcome = cbind(home.wins, away.wins), player1 = home.team,
+                 player2 = away.team, formula = ~ team + at.home, id = "team",
+                 data = matchup_summary)
+
+summary(bt_model)
+```
+
+
+
 ```{r predict2025Probabilities}
 
 ## Might need to change this path, but we use the 2025 season csv to create our schedule of games that will be played.
@@ -24,16 +77,17 @@ upcoming_schedule <- data.frame(HomeTm = season2025$HomeTm, VisTm = season2025$V
 
 
 ## Method 1, Monte Carlo
-
-## Args: skillTable - a skill table that gives the ability for each team, nsim - the number of simulations to run
-
+## Args: skillTable - a skill table that gives the ability for each team(it should have the format of the table returned by BTabilities), nsim - the number of simulations to run
 ## The result of this function is a 32x18 matrix, where the [i, j] entry is the empirical probability of the ith team getting j wins(a team get 0-17 wins).
 monteCarlo <- function(skillTable, nsim = 10000)
 {
-  teams <- skillTable$Team
+  teams <- rownames(skillTable)
   
   win_counts <- matrix(0, nrow = 32, ncol = 18)
   rownames(win_counts) <- teams
+  
+  ## Home advantage
+  homeAdvantage <- summary(bt_model)$coefficients["at.home", "Estimate"]
   
   for (i in 1:nsim) {
     
@@ -45,11 +99,11 @@ monteCarlo <- function(skillTable, nsim = 10000)
       homeTeam <- upcoming_schedule$HomeTm[j]
       awayTeam <- upcoming_schedule$VisTm[j]
       
-      homeSkill <- skillTable$Skill[skillTable$Team == homeTeam]
-      awaySkill <- skillTable$Skill[skillTable$Team == awayTeam]
+      homeSkill <- skillTable[homeTeam, "ability"]
+      awaySkill <- skillTable[awayTeam, "ability"]
       
-      # Not sure if this is the right win probability from BT
-      probHomeWin <- exp(homeSkill) / (exp(homeSkill) + exp(awaySkill))
+      ## Calculate win probability
+      probHomeWin <- exp(homeAdvantage + homeSkill - awaySkill) / (1 + exp(homeAdvantage + homeSkill - awaySkill))
       
       ## Simulate the result of the match as a Bernoulli trial
       simulatedResult <- rbinom(1, 1, prob = probHomeWin)
@@ -82,9 +136,9 @@ monteCarlo <- function(skillTable, nsim = 10000)
 
 }
 
-## I tested the functionality using this 2025 skill table
-## sampleSkillTable <- read.csv("2025_skill.csv")
 
+## Sample run of monte carlo
+empiricalDist <- monteCarlo(BTabilities(bt_model))
 
 
 ## Method 2, Poisson Binomial dist
