@@ -1,0 +1,95 @@
+---
+title: "predictWinProbabilities"
+author: "Richie Jiang"
+date: "2025-09-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r predict2025Probabilities}
+
+## Might need to change this path, but we use the 2025 season csv to create our schedule of games that will be played.
+season2025 <- read.csv("season2025.csv")
+
+## Only keep regular season games(drop preseason games). We do this by checking to see whether the Week column is numeric(regular season) or not(preseason).
+season2025 <- subset(season2025, grepl("^[0-9]+$", Week))
+
+## Then create the upcoming schedule
+upcoming_schedule <- data.frame(HomeTm = season2025$HomeTm, VisTm = season2025$VisTm)
+
+
+
+
+## Method 1, Monte Carlo
+
+## Args: skillTable - a skill table that gives the ability for each team, nsim - the number of simulations to run
+
+## The result of this function is a 32x18 matrix, where the [i, j] entry is the empirical probability of the ith team getting j wins(a team get 0-17 wins).
+monteCarlo <- function(skillTable, nsim = 10000)
+{
+  teams <- skillTable$Team
+  
+  win_counts <- matrix(0, nrow = 32, ncol = 18)
+  rownames(win_counts) <- teams
+  
+  for (i in 1:nsim) {
+    
+    # Used to keep track of number of wins for each team in this simulated 2025 season
+    season_wins <- setNames(rep(0, length(teams)), teams)
+    
+    for (j in 1:nrow(upcoming_schedule))
+    {
+      homeTeam <- upcoming_schedule$HomeTm[j]
+      awayTeam <- upcoming_schedule$VisTm[j]
+      
+      homeSkill <- skillTable$Skill[skillTable$Team == homeTeam]
+      awaySkill <- skillTable$Skill[skillTable$Team == awayTeam]
+      
+      # Not sure if this is the right win probability from BT
+      probHomeWin <- exp(homeSkill) / (exp(homeSkill) + exp(awaySkill))
+      
+      ## Simulate the result of the match as a Bernoulli trial
+      simulatedResult <- rbinom(1, 1, prob = probHomeWin)
+      
+      if (simulatedResult == 1)
+      {
+        season_wins[homeTeam] = season_wins[homeTeam] + 1
+      }
+      else
+      {
+        season_wins[awayTeam] = season_wins[awayTeam] + 1
+      }
+    }
+    
+    ## Now we update the win counter(0-17) for each team
+    for (t in teams)
+    {
+      # We do +1 for season_wins[t] because of zero subscript
+      wins <- season_wins[t]
+
+      win_counts[t, wins + 1] <- win_counts[t, wins + 1] + 1
+    }
+  }
+  
+  # Calculate empirical distribution by just dividing win_counts by number of simulations
+  simulated_win_probs <- win_counts / nsim
+  
+  # Then return
+  return(simulated_win_probs)
+
+}
+
+## I tested the functionality using this 2025 skill table
+## sampleSkillTable <- read.csv("2025_skill.csv")
+
+
+
+## Method 2, Poisson Binomial dist
+## Not implemented yet
+
+
+
+```
