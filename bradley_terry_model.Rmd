@@ -1,0 +1,165 @@
+---
+title: "bradley_terry_model"
+author: "Richie Jiang"
+date: "2025-09-04"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## First we read in all past year individual game results.
+## We will use the past season individual game results for Bradley-Terry
+
+```{r readData}
+
+library(readr)
+library(dplyr)
+
+csv_files <- list.files("nfl_data", pattern = "season[0-9]+\\.csv", full.names = TRUE)
+data_list <- list()
+
+for (file in csv_files) {
+  season <- as.numeric(gsub(".*season([0-9]+)\\.csv", "\\1", basename(file)))
+  
+  # Read file, skip the junk lines at the top
+  temp_data <- read.csv(file, skip = 4, header = TRUE, stringsAsFactors = FALSE)
+  
+  # Drop any completely empty columns (from the double commas)
+  temp_data <- temp_data[, colSums(!is.na(temp_data)) > 0, drop = FALSE]
+  
+  # Standardize column names
+  names(temp_data) <- c("Week", "Day", "Date", "Time",
+                        "Winner", "At", "Loser", "Boxscore",
+                        "PtsW", "PtsL", "YdsW", "TOW", "YdsL", "TOL")
+  
+  # Add season column
+  temp_data$Season <- season
+  
+  data_list[[file]] <- temp_data
+}
+
+# Combine
+combined_data <- do.call(rbind, data_list)
+
+combined_data <- combined_data %>%
+  mutate(
+    Winner = recode(Winner,
+                    "St. Louis Rams" = "Los Angeles Rams",
+                    "Oakland Raiders" = "Las Vegas Raiders",
+                    "Washington Redskins" = "Washington Commanders",
+                    "Washington Football Team" = "Washington Commanders",
+                    "San Diego Chargers" = "Los Angeles Chargers",
+                    .default = Winner),  # Preserve original value if not in mapping
+    Loser = recode(Loser,
+                   "St. Louis Rams" = "Los Angeles Rams",
+                   "Oakland Raiders" = "Las Vegas Raiders",
+                   "Washington Redskins" = "Washington Commanders",
+                   "Washington Football Team" = "Washington Commanders",
+                   "San Diego Chargers" = "Los Angeles Chargers",
+                   .default = Loser)  # Preserve original value if not in mapping
+  )
+
+# Drop rows where Winner is missing/blank
+combined_data <- combined_data[combined_data$Winner != "" & !is.na(combined_data$Winner), ]
+
+
+
+
+```
+
+
+```{r fitBradleyTerry}
+library(BradleyTerry2)
+
+combined_data_bt <- combined_data %>%
+  rowwise() %>%
+  mutate(
+    home_team = ifelse(At == "@", Loser, Winner),
+    away_team = ifelse(At == "@", Winner, Loser),
+    y = ifelse(At == "@", 0, 1),      # 1 if home team wins, 0 if home team loses
+    home_field = 1                     # fixed effect indicator
+  ) %>%
+  ungroup() %>%
+  rename(team_i = home_team, team_j = away_team)
+
+add_weights <- function(df, lambda, current_season) {
+  df %>%
+    mutate(
+      age = current_season - Season,
+      w = exp(-lambda * age)
+    )
+}
+
+logLoss <- function(y_true, y_pred, eps = 1e-15) {
+  y_pred <- pmin(pmax(y_pred, eps), 1 - eps)
+  -mean(y_true * log(y_pred) + (1 - y_true) * log(1 - y_pred))
+}
+
+backtest_bt <- function(combined_data, lambda) {
+  seasons <- sort(unique(combined_data$Season))
+  results <- list()
+  
+  for (i in 1:(length(seasons)-1)) {
+    train_seasons <- seasons[1:i]
+    test_season   <- seasons[i+1]
+    
+    train <- filter(combined_data, Season %in% train_seasons)
+    test  <- filter(combined_data, Season == test_season)
+    
+    train <- add_weights(train, lambda, max(train_seasons))
+    
+    
+    # Ensure team_i and team_j are factors with same levels
+    all_teams <- union(train$team_i, train$team_j)
+    train <- train %>%
+      mutate(
+        team_i = factor(team_i, levels = all_teams),
+        team_j = factor(team_j, levels = all_teams)
+      )
+    test <- test %>%
+      mutate(
+        team_i = factor(team_i, levels = all_teams),
+        team_j = factor(team_j, levels = all_teams)
+      )
+    
+    
+    bt_model <- BTm(
+      outcome = cbind(y, 1 - y),  
+      player1 = team_i,
+      player2 = team_j,
+      formula = ~ home_field,   
+      data = train,
+      weights = train$w,
+      refcat = "New England Patriots"
+    )
+    
+    probs <- predict(bt_model, newdata = test, type = "response")
+    
+    ll <- logLoss(test$y, probs)
+    
+    results[[i]] <- data.frame(
+      train_through = max(train_seasons),
+      test_season = test_season,
+      logloss = ll,
+      lambda = lambda
+    )
+  }
+  bind_rows(results)
+}
+
+
+lambdas <- c(0.0, 0.2, 0.5, 1.0)
+all_results <- do.call(rbind, lapply(lambdas, function(l) backtest_bt(combined_data_bt, l)))
+
+
+all_results_summary <- all_results %>%
+  group_by(lambda) %>%
+  summarise(mean_logloss = mean(logloss))
+
+print(all_results_summary)
+```
+
+
+
